@@ -1,1 +1,42 @@
-
+{
+  "episode_id": "leo_learns_to_share",
+  "title": "Leo Learns to Share | Little Safari Friends",
+  "description": "Leo the little lion learns that sharing makes playtime happier. A gentle original safari story for young children.\n\n#LittleSafariFriends #KidsStories #Sharing",
+  "voice": "en-US-AnaNeural",
+  "width": 1280,
+  "height": 720,
+  "fps": 24,
+  "duration_seconds": 32,
+  "scenes": [
+    {
+      "start": 0,
+      "end": 6,
+      "narration": "On a sunny morning, Leo the little lion found three delicious mangoes under a tree.",
+      "caption": "Leo finds three mangoes!"
+    },
+    {
+      "start": 6,
+      "end": 13,
+      "narration": "His friends Ellie the elephant and Gigi the giraffe came over. They were hungry too.",
+      "caption": "Ellie and Gigi are hungry too."
+    },
+    {
+      "start": 13,
+      "end": 21,
+      "narration": "Leo wanted every mango for himself. Then he noticed his friends had nothing to eat.",
+      "caption": "Leo stops and thinks."
+    },
+    {
+      "start": 21,
+      "end": 28,
+      "narration": "Leo shared the mangoes, and they took turns enjoying the sweet fruit together.",
+      "caption": "Sharing makes everyone smile!"
+    },
+    {
+      "start": 28,
+      "end": 32,
+      "narration": "Leo learned that sharing makes a good day even better. See you next time, safari friends!",
+      "caption": "The end! Be kind and share."
+    }
+  ]
+}
