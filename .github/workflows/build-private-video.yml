@@ -50,8 +50,7 @@ jobs:
           path: output/*.mp4
           if-no-files-found: error
           retention-days: 7
-
-            - name: Upload to YouTube privately when credentials are configured
+      - name: Upload to YouTube privately when credentials are configured
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
