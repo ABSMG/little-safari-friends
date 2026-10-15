@@ -51,11 +51,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload to YouTube privately if secrets exist
-        if: ${{ secrets.YOUTUBE_CLIENT_ID != '' && secrets.YOUTUBE_CLIENT_SECRET != '' && secrets.YOUTUBE_REFRESH_TOKEN != '' }}
+            - name: Upload to YouTube privately when credentials are configured
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
         run: |
-          python scripts/upload_youtube.py output/leo_learns_to_share.mp4
+          if [ -n "$YOUTUBE_CLIENT_ID" ] && [ -n "$YOUTUBE_CLIENT_SECRET" ] && [ -n "$YOUTUBE_REFRESH_TOKEN" ]; then
+            python scripts/upload_youtube.py output/leo_learns_to_share.mp4
+          else
+            echo "YouTube upload skipped: repository secrets are not all configured."
+          fi
