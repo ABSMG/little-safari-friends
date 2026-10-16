@@ -506,7 +506,41 @@ def main():
         episode.get("height", 720)
     )
 
-    scene.render.resolution_percentage = 100
+    # Faster rendering for GitHub Actions CPU runners.
+    scene.render.resolution_percentage = int(
+        episode.get("resolution_percentage", 75)
+    )
+
+    # Reduce Eevee rendering samples from the default 64 to 8.
+    # This significantly reduces rendering time.
+    try:
+        if hasattr(scene, "eevee") and hasattr(
+            scene.eevee, "taa_render_samples"
+        ):
+            scene.eevee.taa_render_samples = int(
+                episode.get("render_samples", 8)
+            )
+    except (AttributeError, TypeError, ValueError) as error:
+        print(
+            f"Could not configure Eevee samples: {error}",
+            flush=True,
+        )
+
+    # Avoid unnecessary subdivision work.
+    try:
+        scene.render.use_simplify = True
+        scene.render.simplify_subdivision = 0
+    except (AttributeError, TypeError):
+        pass
+
+    print(
+        f"Rendering at {scene.render.resolution_x}x"
+        f"{scene.render.resolution_y}, "
+        f"{scene.render.resolution_percentage}% scale; "
+        f"samples={episode.get('render_samples', 8)}",
+        flush=True,
+    )
+
     scene.render.fps = int(episode.get("fps", 24))
     scene.frame_start = 1
 
