@@ -1,4 +1,15 @@
-"""Low-poly procedural safari scene rendered by Blender."""
+"""Premium hybrid animated safari scene rendered by Blender.
+
+Features:
+- Leo the lion, Ellie the elephant and Gigi the giraffe.
+- Procedural safari environment, acacia tree, mangoes and clouds.
+- Improved materials, lighting, shadows and color management.
+- Character movement, head/body bounce, tail and leg animation.
+- Animated camera movement.
+- Episode-driven captions.
+- Configurable resolution, samples, duration and frame rate.
+- MP4/H.264 output suitable for GitHub Actions automation.
+"""
 
 import argparse
 import json
@@ -9,6 +20,10 @@ from pathlib import Path
 import bpy
 from mathutils import Vector
 
+
+# ---------------------------------------------------------
+# COMMAND-LINE ARGUMENTS
+# ---------------------------------------------------------
 
 def get_args():
     raw = (
@@ -24,20 +39,49 @@ def get_args():
     return parser.parse_args(raw)
 
 
-def mat(name, color):
+# ---------------------------------------------------------
+# MATERIALS
+# ---------------------------------------------------------
+
+def mat(
+    name,
+    color,
+    roughness=0.72,
+    metallic=0.0,
+    subsurface=0.0
+):
     material = bpy.data.materials.new(name)
-    material.diffuse_color = (*color, 1)
-    material.roughness = 0.8
+    material.diffuse_color = (*color, 1.0)
+    material.use_nodes = True
+
+    bsdf = material.node_tree.nodes.get("Principled BSDF")
+
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (*color, 1.0)
+        bsdf.inputs["Roughness"].default_value = roughness
+
+        if "Metallic" in bsdf.inputs:
+            bsdf.inputs["Metallic"].default_value = metallic
+
+        if "Subsurface Weight" in bsdf.inputs:
+            bsdf.inputs["Subsurface Weight"].default_value = subsurface
+
+    material.roughness = roughness
+
     return material
 
+
+# ---------------------------------------------------------
+# BASIC PROCEDURAL OBJECTS
+# ---------------------------------------------------------
 
 def sphere(
     name,
     loc,
     scale,
     material,
-    segments=20,
-    rings=12
+    segments=32,
+    rings=20
 ):
     bpy.ops.mesh.primitive_uv_sphere_add(
         segments=segments,
@@ -55,15 +99,15 @@ def sphere(
     return obj
 
 
-def rod(name, a, b, radius, material):
+def rod(name, a, b, radius, material, vertices=20):
     start = Vector(a)
     end = Vector(b)
     direction = end - start
 
     bpy.ops.mesh.primitive_cylinder_add(
-        vertices=12,
+        vertices=vertices,
         radius=radius,
-        depth=direction.length,
+        depth=max(direction.length, 0.001),
         location=(start + end) / 2
     )
 
@@ -71,10 +115,23 @@ def rod(name, a, b, radius, material):
     obj.name = name
     obj.rotation_mode = "QUATERNION"
     obj.rotation_quaternion = direction.to_track_quat(
-        "Z", "Y"
+        "Z",
+        "Y"
     )
 
     obj.data.materials.append(material)
+
+    bevel = obj.modifiers.new(
+        name="Soft rounded edges",
+        type="BEVEL"
+    )
+    bevel.width = min(radius * 0.22, 0.035)
+    bevel.segments = 3
+
+    obj.modifiers.new(
+        name="Weighted corner normals",
+        type="WEIGHTED_NORMAL"
+    )
 
     return obj
 
@@ -91,39 +148,226 @@ def label(body, loc, material):
     obj.data.size = 0.29
     obj.data.align_x = "CENTER"
     obj.data.extrude = 0.002
+    obj.data.bevel_depth = 0.001
+    obj.data.bevel_resolution = 2
 
     obj.data.materials.append(material)
 
     return obj
 
 
-def create_lion(gold, mane, cream, dark):
-    # Body and mane
+# ---------------------------------------------------------
+# ANIMATION HELPERS
+# ---------------------------------------------------------
+
+def smooth_animation(obj):
+    if not obj.animation_data:
+        return
+
+    action = obj.animation_data.action
+
+    if not action:
+        return
+
+    for curve in action.fcurves:
+        for point in curve.keyframe_points:
+            point.interpolation = "BEZIER"
+            point.handle_left_type = "AUTO_CLAMPED"
+            point.handle_right_type = "AUTO_CLAMPED"
+
+
+def animate_bounce(obj, start_frame, end_frame, amount=0.06):
+    """Create a gentle, repeating vertical bounce."""
+
+    base_z = obj.location.z
+    middle = (start_frame + end_frame) // 2
+
+    obj.location.z = base_z
+    obj.keyframe_insert(
+        data_path="location",
+        frame=start_frame
+    )
+
+    obj.location.z = base_z + amount
+    obj.keyframe_insert(
+        data_path="location",
+        frame=middle
+    )
+
+    obj.location.z = base_z
+    obj.keyframe_insert(
+        data_path="location",
+        frame=end_frame
+    )
+
+    smooth_animation(obj)
+
+
+def animate_swing(obj, start_frame, end_frame, angle=0.16):
+    """Animate a small rotation around the object's local X axis."""
+
+    base_rotation = obj.rotation_euler.copy()
+    middle = (start_frame + end_frame) // 2
+
+    obj.rotation_euler = base_rotation
+    obj.keyframe_insert(
+        data_path="rotation_euler",
+        frame=start_frame
+    )
+
+    obj.rotation_euler.x = base_rotation.x + angle
+    obj.keyframe_insert(
+        data_path="rotation_euler",
+        frame=middle
+    )
+
+    obj.rotation_euler = base_rotation
+    obj.keyframe_insert(
+        data_path="rotation_euler",
+        frame=end_frame
+    )
+
+    smooth_animation(obj)
+
+
+def animate_character_parts(prefix, start_frame, end_frame, fps):
+    """Animate body parts individually for a more lively scene."""
+
+    objects = [
+        obj for obj in bpy.context.scene.objects
+        if obj.name.startswith(prefix)
+    ]
+
+    for obj in objects:
+        name = obj.name.lower()
+
+        if any(part in name for part in (
+            "body",
+            "head",
+            "face",
+            "mane",
+            "neck"
+        )):
+            amount = 0.045 if "body" in name else 0.065
+
+            if "neck" in name:
+                amount = 0.035
+
+            animate_bounce(
+                obj,
+                start_frame,
+                end_frame,
+                amount
+            )
+
+        elif any(part in name for part in (
+            "leg",
+            "tail",
+            "trunk",
+            "ear"
+        )):
+            angle = 0.12
+
+            if "tail" in name:
+                angle = 0.24
+            elif "trunk" in name:
+                angle = 0.20
+            elif "ear" in name:
+                angle = 0.10
+
+            animate_swing(
+                obj,
+                start_frame,
+                end_frame,
+                angle
+            )
+
+
+def animate_camera(camera, start_frame, end_frame):
+    """Subtle cinematic camera push-in and pull-back."""
+
+    base_location = camera.location.copy()
+    base_scale = camera.data.ortho_scale
+
+    middle = (start_frame + end_frame) // 2
+
+    camera.location = base_location
+    camera.data.ortho_scale = base_scale
+
+    camera.keyframe_insert(
+        data_path="location",
+        frame=start_frame
+    )
+    camera.data.keyframe_insert(
+        data_path="ortho_scale",
+        frame=start_frame
+    )
+
+    camera.location.y += 0.35
+    camera.location.z += 0.12
+    camera.data.ortho_scale = base_scale * 0.96
+
+    camera.keyframe_insert(
+        data_path="location",
+        frame=middle
+    )
+    camera.data.keyframe_insert(
+        data_path="ortho_scale",
+        frame=middle
+    )
+
+    camera.location = base_location
+    camera.data.ortho_scale = base_scale
+
+    camera.keyframe_insert(
+        data_path="location",
+        frame=end_frame
+    )
+    camera.data.keyframe_insert(
+        data_path="ortho_scale",
+        frame=end_frame
+    )
+
+    smooth_animation(camera)
+    smooth_animation(camera.data)
+
+
+# ---------------------------------------------------------
+# LION: LEO
+# ---------------------------------------------------------
+
+def create_lion(gold, mane, cream, dark, white):
+    # Main body.
     sphere(
         "Leo body",
         (-1.35, 0.6, 0.91),
-        (0.56, 0.72, 0.42),
+        (0.58, 0.72, 0.44),
         gold
     )
 
+    # Mane and face.
     sphere(
         "Leo mane",
         (-1.35, 0.42, 1.55),
-        (0.75, 0.62, 0.72),
-        mane
+        (0.78, 0.64, 0.74),
+        mane,
+        40,
+        28
     )
 
     sphere(
         "Leo face",
-        (-1.35, 0.27, 1.63),
-        (0.51, 0.46, 0.50),
-        gold
+        (-1.35, 0.25, 1.64),
+        (0.52, 0.47, 0.51),
+        gold,
+        40,
+        28
     )
 
     sphere(
         "Leo muzzle",
         (-1.35, -0.14, 1.45),
-        (0.30, 0.15, 0.20),
+        (0.31, 0.16, 0.21),
         cream
     )
 
@@ -134,33 +378,56 @@ def create_lion(gold, mane, cream, dark):
         dark
     )
 
-    # Eyes and ears
-    for dx in (-0.2, 0.2):
+    # Eyes with highlights.
+    for dx in (-0.20, 0.20):
         sphere(
             "Leo eye",
-            (-1.35 + dx, -0.15, 1.77),
-            (0.05, 0.04, 0.06),
+            (-1.35 + dx, -0.15, 1.78),
+            (0.065, 0.045, 0.075),
             dark
+        )
+
+        sphere(
+            "Leo eye highlight",
+            (-1.35 + dx - 0.015, -0.192, 1.805),
+            (0.018, 0.012, 0.022),
+            white,
+            16,
+            10
         )
 
         sphere(
             "Leo ear",
             (-1.35 + dx * 1.9, 0.36, 1.99),
-            (0.15, 0.13, 0.16),
+            (0.16, 0.14, 0.17),
             gold
         )
 
-    # Four legs
-    for x in (-1.68, -1.02):
-        for y in (0.38, 0.86):
+        sphere(
+            "Leo inner ear",
+            (-1.35 + dx * 1.9, 0.235, 2.0),
+            (0.085, 0.035, 0.09),
+            mane
+        )
+
+    # Four legs with separate names for animation.
+    for index, x in enumerate((-1.68, -1.02)):
+        for side_index, y in enumerate((0.38, 0.86)):
             sphere(
-                "Leo leg",
+                f"Leo leg {index}_{side_index}",
                 (x, y, 0.40),
-                (0.14, 0.15, 0.34),
+                (0.15, 0.16, 0.34),
                 gold
             )
 
-    # Tail and tail tuft
+            sphere(
+                f"Leo paw {index}_{side_index}",
+                (x, y - 0.025, 0.16),
+                (0.17, 0.18, 0.10),
+                cream
+            )
+
+    # Tail and tuft.
     rod(
         "Leo tail",
         (-0.88, 1.25, 1.0),
@@ -172,79 +439,176 @@ def create_lion(gold, mane, cream, dark):
     sphere(
         "Leo tail tuft",
         (-0.52, 1.54, 0.82),
-        (0.12, 0.12, 0.12),
+        (0.13, 0.12, 0.13),
         mane
     )
 
+    # Mane tufts add silhouette detail.
+    for index, angle in enumerate(
+        (0.0, 0.8, 1.6, 2.4, 3.2, 4.0, 4.8, 5.6)
+    ):
+        x = -1.35 + math.cos(angle) * 0.68
+        z = 1.55 + math.sin(angle) * 0.65
 
-def create_elephant(grey, pink, dark):
+        sphere(
+            f"Leo mane tuft {index}",
+            (x, 0.42, z),
+            (0.16, 0.14, 0.20),
+            mane,
+            20,
+            12
+        )
+
+
+# ---------------------------------------------------------
+# ELEPHANT: ELLIE
+# ---------------------------------------------------------
+
+def create_elephant(grey, pink, dark, white):
     sphere(
         "Ellie body",
         (1.0, 1.0, 0.9),
-        (0.62, 0.72, 0.5),
-        grey
+        (0.64, 0.74, 0.52),
+        grey,
+        36,
+        24
     )
 
     sphere(
         "Ellie head",
         (1.0, 0.55, 1.43),
-        (0.46, 0.42, 0.45),
-        grey
+        (0.48, 0.43, 0.46),
+        grey,
+        36,
+        24
     )
 
     for dx in (-0.4, 0.4):
         sphere(
             "Ellie ear",
             (1 + dx, 0.53, 1.48),
-            (0.29, 0.12, 0.34),
-            pink
+            (0.31, 0.13, 0.35),
+            grey
         )
 
         sphere(
+            "Ellie inner ear",
+            (1 + dx, 0.405, 1.48),
+            (0.22, 0.045, 0.26),
+            pink
+        )
+
+    for dx in (-0.20, 0.20):
+        sphere(
             "Ellie eye",
-            (1 + dx * 0.55, 0.12, 1.54),
-            (0.045, 0.04, 0.05),
+            (1 + dx, 0.12, 1.55),
+            (0.055, 0.045, 0.06),
             dark
         )
 
+        sphere(
+            "Ellie eye highlight",
+            (1 + dx - 0.012, 0.078, 1.57),
+            (0.016, 0.012, 0.018),
+            white,
+            16,
+            10
+        )
+
+    # Trunk segments provide a softer, articulated appearance.
     rod(
         "Ellie trunk",
-        (1, 0.12, 1.32),
-        (1, -0.02, 0.91),
+        (1.0, 0.12, 1.32),
+        (1.0, -0.02, 0.91),
         0.105,
+        grey,
+        24
+    )
+
+    sphere(
+        "Ellie trunk tip",
+        (1.0, -0.025, 0.90),
+        (0.12, 0.12, 0.12),
         grey
     )
 
-    for x in (0.68, 1.32):
-        for y in (0.68, 1.3):
+    # Small tusks.
+    for dx in (-0.13, 0.13):
+        rod(
+            "Ellie tusk",
+            (1.0 + dx, 0.04, 1.24),
+            (1.0 + dx, -0.02, 1.08),
+            0.035,
+            cream_material(),
+            12
+        )
+
+    for index, x in enumerate((0.68, 1.32)):
+        for side_index, y in enumerate((0.68, 1.3)):
             sphere(
-                "Ellie leg",
+                f"Ellie leg {index}_{side_index}",
                 (x, y, 0.39),
-                (0.15, 0.16, 0.34),
+                (0.16, 0.17, 0.34),
+                grey
+            )
+
+            sphere(
+                f"Ellie foot {index}_{side_index}",
+                (x, y - 0.02, 0.15),
+                (0.18, 0.19, 0.10),
                 grey
             )
 
 
-def create_giraffe(gold, brown):
+def cream_material():
+    """Create a reusable ivory material for small tusks."""
+
+    material = bpy.data.materials.get("Ivory tusks")
+
+    if material:
+        return material
+
+    return mat(
+        "Ivory tusks",
+        (0.96, 0.88, 0.68),
+        roughness=0.4
+    )
+
+
+# ---------------------------------------------------------
+# GIRAFFE: GIGI
+# ---------------------------------------------------------
+
+def create_giraffe(gold, brown, dark, white):
     sphere(
         "Gigi body",
         (2.7, 0.9, 0.95),
-        (0.42, 0.60, 0.4),
-        gold
+        (0.44, 0.62, 0.42),
+        gold,
+        36,
+        24
     )
 
     rod(
         "Gigi neck",
         (2.7, 0.72, 1.0),
         (2.7, 0.70, 2.05),
-        0.16,
-        gold
+        0.17,
+        gold,
+        24
     )
 
     sphere(
         "Gigi head",
         (2.7, 0.65, 2.14),
-        (0.28, 0.29, 0.28),
+        (0.30, 0.30, 0.29),
+        gold
+    )
+
+    sphere(
+        "Gigi muzzle",
+        (2.7, 0.37, 2.06),
+        (0.22, 0.13, 0.14),
         gold
     )
 
@@ -260,37 +624,286 @@ def create_giraffe(gold, brown):
         sphere(
             "Gigi horn",
             (2.7 + dx, 0.66, 2.50),
-            (0.06, 0.06, 0.06),
+            (0.065, 0.065, 0.065),
             brown
         )
 
-    for x in (2.48, 2.92):
-        for y in (0.65, 1.15):
+    for dx in (-0.14, 0.14):
+        sphere(
+            "Gigi eye",
+            (2.7 + dx, 0.37, 2.19),
+            (0.045, 0.035, 0.05),
+            dark
+        )
+
+        sphere(
+            "Gigi eye highlight",
+            (2.7 + dx - 0.01, 0.337, 2.205),
+            (0.013, 0.01, 0.015),
+            white,
+            16,
+            10
+        )
+
+    # Four legs.
+    for index, x in enumerate((2.48, 2.92)):
+        for side_index, y in enumerate((0.65, 1.15)):
             sphere(
-                "Gigi leg",
+                f"Gigi leg {index}_{side_index}",
                 (x, y, 0.38),
-                (0.10, 0.12, 0.33),
+                (0.11, 0.13, 0.33),
                 gold
             )
 
-    # Giraffe spots
+    # Distinctive brown giraffe spots.
     spots = [
         (2.54, 0.87),
         (2.82, 1.02),
         (2.76, 0.78),
-        (2.62, 1.15)
+        (2.62, 1.15),
+        (2.68, 1.00),
+        (2.83, 0.84),
+        (2.58, 1.06)
     ]
 
-    for x, z in spots:
+    for index, (x, z) in enumerate(spots):
         sphere(
-            "Gigi spot",
+            f"Gigi spot {index}",
             (x, 0.49, z),
-            (0.06, 0.025, 0.07),
+            (0.075, 0.03, 0.08),
             brown,
-            12,
+            16,
+            10
+        )
+
+
+# ---------------------------------------------------------
+# ENVIRONMENT
+# ---------------------------------------------------------
+
+def create_environment(grass, brown, white, orange):
+    # Ground plane.
+    bpy.ops.mesh.primitive_plane_add(size=200)
+
+    ground = bpy.context.object
+    ground.name = "Savanna"
+    ground.data.materials.append(grass)
+
+    # A small procedural grass patch adds foreground detail.
+    grass_blades = mat(
+        "Foreground grass blades",
+        (0.24, 0.43, 0.12)
+    )
+
+    for index in range(28):
+        x = -4.5 + (index % 14) * 0.68
+        y = -1.4 - (index // 14) * 0.55
+
+        rod(
+            f"Grass blade {index}",
+            (x, y, 0.02),
+            (x + 0.06, y, 0.18 + (index % 3) * 0.04),
+            0.018,
+            grass_blades,
             8
         )
 
+    # Acacia tree.
+    rod(
+        "Acacia trunk",
+        (3.7, 1.8, 0),
+        (3.7, 1.8, 2.2),
+        0.18,
+        brown
+    )
+
+    canopy_material = mat(
+        "Acacia foliage",
+        (0.20, 0.39, 0.13),
+        roughness=0.9
+    )
+
+    canopy_parts = [
+        (3.7, 2.5, (1.2, 0.45, 0.34)),
+        (3.0, 2.32, (0.7, 0.4, 0.25)),
+        (4.4, 2.32, (0.7, 0.4, 0.25))
+    ]
+
+    for index, (x, z, size) in enumerate(canopy_parts):
+        sphere(
+            f"Acacia canopy {index}",
+            (x, 1.8, z),
+            size,
+            canopy_material
+        )
+
+    # Mangoes and leaves.
+    for index, x in enumerate((-1.1, -0.5, 0.1)):
+        sphere(
+            f"Mango {index}",
+            (x, -0.8, 0.16),
+            (0.16, 0.20, 0.14),
+            orange
+        )
+
+        sphere(
+            f"Mango leaf {index}",
+            (x + 0.05, -0.79, 0.28),
+            (0.06, 0.025, 0.025),
+            grass,
+            16,
+            10
+        )
+
+    # Clouds.
+    for cloud_index, (cx, cy, cz) in enumerate([
+        (-3.4, 2.7, 5.1),
+        (0.1, 3.0, 5.5),
+        (3.7, 3.1, 5.1)
+    ]):
+        pieces = [
+            (-0.3, 0, 0.34),
+            (0, 0.1, 0.42),
+            (0.32, 0.02, 0.30)
+        ]
+
+        for part_index, (dx, dz, size) in enumerate(pieces):
+            sphere(
+                f"Cloud {cloud_index}_{part_index}",
+                (cx + dx, cy, cz + dz),
+                (size, 0.16, size * 0.5),
+                white,
+                20,
+                12
+            )
+
+
+# ---------------------------------------------------------
+# LIGHTING AND CAMERA
+# ---------------------------------------------------------
+
+def create_camera(scene):
+    bpy.ops.object.camera_add(
+        location=(0, -10.5, 5.0)
+    )
+
+    camera = bpy.context.object
+    camera.name = "Cinematic Camera"
+
+    direction = (
+        Vector((0, 0.2, 1.25))
+        - camera.location
+    )
+
+    camera.rotation_euler = direction.to_track_quat(
+        "-Z",
+        "Y"
+    ).to_euler()
+
+    camera.data.type = "ORTHO"
+    camera.data.ortho_scale = 10.3
+    camera.data.lens = 45
+
+    scene.camera = camera
+
+    return camera
+
+
+def create_lighting():
+    # Warm key light.
+    bpy.ops.object.light_add(
+        type="AREA",
+        location=(-4, -5, 8)
+    )
+
+    key_light = bpy.context.object
+    key_light.name = "Warm sunset key light"
+    key_light.data.energy = 1600
+    key_light.data.shape = "DISK"
+    key_light.data.size = 7
+    key_light.data.color = (1.0, 0.79, 0.57)
+
+    # Cooler fill light.
+    bpy.ops.object.light_add(
+        type="AREA",
+        location=(4, 2, 6)
+    )
+
+    fill_light = bpy.context.object
+    fill_light.name = "Soft sky fill light"
+    fill_light.data.energy = 800
+    fill_light.data.shape = "DISK"
+    fill_light.data.size = 6
+    fill_light.data.color = (0.67, 0.81, 1.0)
+
+    # Back/rim light for character separation.
+    bpy.ops.object.light_add(
+        type="AREA",
+        location=(1.5, 4.0, 5.5)
+    )
+
+    rim_light = bpy.context.object
+    rim_light.name = "Golden rim light"
+    rim_light.data.energy = 1100
+    rim_light.data.size = 4
+    rim_light.data.color = (1.0, 0.62, 0.31)
+
+
+# ---------------------------------------------------------
+# CAPTION TIMING
+# ---------------------------------------------------------
+
+def configure_captions(scene, captions):
+    for obj, item in captions:
+        start = max(
+            1,
+            int(item.get("start", 0) * scene.render.fps) + 1
+        )
+
+        end = min(
+            scene.frame_end,
+            int(item.get("end", 32) * scene.render.fps)
+        )
+
+        if end < start:
+            end = start
+
+        # Hide captions before their assigned scene.
+        obj.hide_render = True
+        obj.keyframe_insert(
+            data_path="hide_render",
+            frame=1
+        )
+
+        obj.hide_render = True
+        obj.keyframe_insert(
+            data_path="hide_render",
+            frame=max(1, start - 1)
+        )
+
+        # Show caption during its assigned interval.
+        obj.hide_render = False
+        obj.keyframe_insert(
+            data_path="hide_render",
+            frame=start
+        )
+
+        # Hide caption immediately after the interval.
+        obj.hide_render = True
+        obj.keyframe_insert(
+            data_path="hide_render",
+            frame=min(scene.frame_end, end + 1)
+        )
+
+        if obj.animation_data and obj.animation_data.action:
+            for curve in obj.animation_data.action.fcurves:
+                for point in curve.keyframe_points:
+                    point.interpolation = "CONSTANT"
+
+
+# ---------------------------------------------------------
+# MAIN
+# ---------------------------------------------------------
 
 def main():
     args = get_args()
@@ -305,140 +918,116 @@ def main():
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
 
+    # -----------------------------------------------------
     # Materials
+    # -----------------------------------------------------
+
     grass = mat(
         "Savanna grass",
-        (0.40, 0.62, 0.22)
+        (0.40, 0.62, 0.22),
+        roughness=0.92
     )
 
     gold = mat(
         "Leo and Gigi gold",
-        (1.0, 0.60, 0.13)
+        (1.0, 0.60, 0.13),
+        roughness=0.5,
+        subsurface=0.035
     )
 
     mane = mat(
         "Lion mane",
-        (0.42, 0.18, 0.06)
+        (0.42, 0.18, 0.06),
+        roughness=0.75
     )
 
     cream = mat(
         "Muzzle cream",
-        (1.0, 0.85, 0.59)
+        (1.0, 0.85, 0.59),
+        roughness=0.55
     )
 
     dark = mat(
         "Dark eyes",
-        (0.035, 0.025, 0.02)
+        (0.035, 0.025, 0.02),
+        roughness=0.3
     )
 
     grey = mat(
         "Ellie grey",
-        (0.48, 0.55, 0.60)
+        (0.48, 0.55, 0.60),
+        roughness=0.58,
+        subsurface=0.025
     )
 
     pink = mat(
         "Inner ears",
-        (0.9, 0.36, 0.40)
+        (0.9, 0.36, 0.40),
+        roughness=0.65
     )
 
     brown = mat(
         "Spots and tree",
-        (0.38, 0.17, 0.06)
+        (0.38, 0.17, 0.06),
+        roughness=0.9
     )
 
     white = mat(
-        "Clouds",
-        (1.0, 1.0, 1.0)
+        "Clouds and eye highlights",
+        (1.0, 1.0, 1.0),
+        roughness=0.7
     )
 
     caption_material = mat(
         "Caption",
-        (0.04, 0.10, 0.07)
+        (0.04, 0.10, 0.07),
+        roughness=0.5
     )
 
     orange = mat(
         "Mango",
-        (1.0, 0.30, 0.025)
+        (1.0, 0.30, 0.025),
+        roughness=0.45,
+        subsurface=0.02
     )
 
-    # Ground
-    bpy.ops.mesh.primitive_plane_add(size=200)
+    # -----------------------------------------------------
+    # Environment and characters
+    # -----------------------------------------------------
 
-    ground = bpy.context.object
-    ground.name = "Savanna"
-    ground.data.materials.append(grass)
-
-    # Acacia tree
-    rod(
-        "Acacia trunk",
-        (3.7, 1.8, 0),
-        (3.7, 1.8, 2.2),
-        0.18,
-        brown
+    create_environment(
+        grass,
+        brown,
+        white,
+        orange
     )
 
-    canopy_parts = [
-        (3.7, 2.5, (1.2, 0.45, 0.34)),
-        (3.0, 2.32, (0.7, 0.4, 0.25)),
-        (4.4, 2.32, (0.7, 0.4, 0.25))
-    ]
+    create_lion(
+        gold,
+        mane,
+        cream,
+        dark,
+        white
+    )
 
-    for x, z, size in canopy_parts:
-        sphere(
-            "Acacia canopy",
-            (x, 1.8, z),
-            size,
-            grass
-        )
+    create_elephant(
+        grey,
+        pink,
+        dark,
+        white
+    )
 
-    # Mangoes
-    for x in (-1.1, -0.5, 0.1):
-        sphere(
-            "Mango",
-            (x, -0.8, 0.16),
-            (0.16, 0.20, 0.14),
-            orange
-        )
+    create_giraffe(
+        gold,
+        brown,
+        dark,
+        white
+    )
 
-        sphere(
-            "Mango leaf",
-            (x + 0.05, -0.79, 0.28),
-            (0.06, 0.025, 0.025),
-            grass,
-            12,
-            8
-        )
-
-    # Characters
-    create_lion(gold, mane, cream, dark)
-    create_elephant(grey, pink, dark)
-    create_giraffe(gold, brown)
-
-    # Clouds
-    clouds = [
-        (-3.4, 2.7, 5.1),
-        (0.1, 3.0, 5.5),
-        (3.7, 3.1, 5.1)
-    ]
-
-    for cx, cy, cz in clouds:
-        pieces = [
-            (-0.3, 0, 0.34),
-            (0, 0.1, 0.42),
-            (0.32, 0.02, 0.30)
-        ]
-
-        for dx, dz, size in pieces:
-            sphere(
-                "Cloud",
-                (cx + dx, cy, cz + dz),
-                (size, 0.16, size * 0.5),
-                white,
-                16,
-                8
-            )
-
+    # -----------------------------------------------------
     # Captions
+    # -----------------------------------------------------
+
     captions = []
 
     for index, item in enumerate(episode["scenes"]):
@@ -451,47 +1040,37 @@ def main():
         obj.name = f"Caption_{index}"
         captions.append((obj, item))
 
-    # Camera
-    bpy.ops.object.camera_add(
-        location=(0, -10.5, 5.0)
-    )
+    # -----------------------------------------------------
+    # Camera and lighting
+    # -----------------------------------------------------
 
-    camera = bpy.context.object
+    camera = create_camera(scene)
+    create_lighting()
 
-    direction = (
-        Vector((0, 0.2, 1.25))
-        - camera.location
-    )
+    # -----------------------------------------------------
+    # World and render settings
+    # -----------------------------------------------------
 
-    camera.rotation_euler = direction.to_track_quat(
-        "-Z", "Y"
-    ).to_euler()
+    world = bpy.data.worlds.get("World")
 
-    camera.data.type = "ORTHO"
-    camera.data.ortho_scale = 10.3
-    scene.camera = camera
+    if world is None:
+        world = bpy.data.worlds.new("Safari Sky")
+        scene.world = world
 
-    # Lighting
-    bpy.ops.object.light_add(
-        type="AREA",
-        location=(-4, -5, 8)
-    )
-
-    key_light = bpy.context.object
-    key_light.data.energy = 1400
-    key_light.data.size = 8
-
-    bpy.ops.object.light_add(
-        type="AREA",
-        location=(4, 2, 6)
-    )
-
-    fill_light = bpy.context.object
-    fill_light.data.energy = 650
-    fill_light.data.size = 6
-
-    # Render settings
     scene.world.color = (0.35, 0.52, 0.70)
+
+    world.use_nodes = True
+
+    background = world.node_tree.nodes.get("Background")
+
+    if background:
+        background.inputs["Color"].default_value = (
+            0.30,
+            0.46,
+            0.68,
+            1.0
+        )
+        background.inputs["Strength"].default_value = 0.45
 
     if bpy.app.version >= (4, 0, 0):
         scene.render.engine = "BLENDER_EEVEE_NEXT"
@@ -506,42 +1085,67 @@ def main():
         episode.get("height", 720)
     )
 
-    # Faster rendering for GitHub Actions CPU runners.
+    # Higher quality than the previous 75% render.
     scene.render.resolution_percentage = int(
-        episode.get("resolution_percentage", 75)
+        episode.get("resolution_percentage", 100)
     )
 
-    # Reduce Eevee rendering samples from the default 64 to 8.
-    # This significantly reduces rendering time.
+    samples = int(
+        episode.get("render_samples", 16)
+    )
+
     try:
         if hasattr(scene, "eevee") and hasattr(
-            scene.eevee, "taa_render_samples"
+            scene.eevee,
+            "taa_render_samples"
         ):
-            scene.eevee.taa_render_samples = int(
-                episode.get("render_samples", 8)
-            )
+            scene.eevee.taa_render_samples = samples
     except (AttributeError, TypeError, ValueError) as error:
         print(
             f"Could not configure Eevee samples: {error}",
-            flush=True,
+            flush=True
         )
 
-    # Avoid unnecessary subdivision work.
+    # Keep the scene optimised without disabling its materials.
     try:
-        scene.render.use_simplify = True
-        scene.render.simplify_subdivision = 0
+        scene.render.use_simplify = False
     except (AttributeError, TypeError):
         pass
 
-    print(
-        f"Rendering at {scene.render.resolution_x}x"
-        f"{scene.render.resolution_y}, "
-        f"{scene.render.resolution_percentage}% scale; "
-        f"samples={episode.get('render_samples', 8)}",
-        flush=True,
+    # High-quality image output.
+    scene.render.image_settings.color_mode = "RGBA"
+    scene.render.film_transparent = False
+
+    # Color management.
+    try:
+        scene.view_settings.view_transform = "AgX"
+    except (TypeError, ValueError):
+        scene.view_settings.view_transform = "Standard"
+
+    scene.view_settings.look = "AgX - Medium High Contrast" \
+        if "AgX - Medium High Contrast" in [
+            item.name
+            for item in bpy.types.ColorManagedViewSettings.bl_rna
+            .properties["look"].enum_items
+        ] else "Medium High Contrast"
+
+    scene.view_settings.exposure = 0.0
+    scene.view_settings.gamma = 1.0
+
+    # Shadows and ambient occlusion where supported.
+    try:
+        if hasattr(scene, "eevee"):
+            scene.eevee.use_gtao = True
+            scene.eevee.gtao_distance = 3
+            scene.eevee.gtao_factor = 1.25
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    # Video output.
+    scene.render.fps = int(
+        episode.get("fps", 24)
     )
 
-    scene.render.fps = int(episode.get("fps", 24))
     scene.frame_start = 1
 
     scene.frame_end = (
@@ -552,76 +1156,62 @@ def main():
     scene.render.image_settings.file_format = "FFMPEG"
     scene.render.ffmpeg.format = "MPEG4"
     scene.render.ffmpeg.codec = "H264"
+    scene.render.ffmpeg.constant_rate_factor = "HIGH"
+    scene.render.ffmpeg.ffmpeg_preset = "GOOD"
 
     scene.render.filepath = str(
         Path(args.output).resolve()
     )
 
-    scene.view_settings.view_transform = "Standard"
+    # -----------------------------------------------------
+    # Animation
+    # -----------------------------------------------------
 
-    # Gentle bouncing animation for Leo.
-    for name in ("Leo face", "Leo mane"):
-        obj = bpy.data.objects.get(name)
+    # Characters move throughout the episode.
+    animate_character_parts(
+        "Leo",
+        1,
+        scene.frame_end,
+        scene.render.fps
+    )
 
-        if obj is None:
-            continue
+    animate_character_parts(
+        "Ellie",
+        1,
+        scene.frame_end,
+        scene.render.fps
+    )
 
-        base = obj.location.copy()
+    animate_character_parts(
+        "Gigi",
+        1,
+        scene.frame_end,
+        scene.render.fps
+    )
 
-        obj.keyframe_insert(
-            data_path="location",
-            frame=1
-        )
+    # Camera movement adds cinematic depth.
+    animate_camera(
+        camera,
+        1,
+        scene.frame_end
+    )
 
-        obj.location.z += 0.09
+    # Keep all existing episode captions.
+    configure_captions(
+        scene,
+        captions
+    )
 
-        obj.keyframe_insert(
-            data_path="location",
-            frame=scene.render.fps * 2
-        )
-
-        obj.location = base
-
-        obj.keyframe_insert(
-            data_path="location",
-            frame=scene.render.fps * 4
-        )
-
-    # Show each caption during its assigned time interval.
-    for obj, item in captions:
-        start = max(
-            1,
-            int(item.get("start", 0) * scene.render.fps) + 1
-        )
-
-        end = min(
-            scene.frame_end,
-            int(item.get("end", 32) * scene.render.fps)
-        )
-
-        obj.hide_render = True
-        obj.keyframe_insert(
-            data_path="hide_render",
-            frame=1
-        )
-
-        obj.hide_render = False
-        obj.keyframe_insert(
-            data_path="hide_render",
-            frame=start
-        )
-
-        obj.hide_render = True
-
-        obj.keyframe_insert(
-            data_path="hide_render",
-            frame=min(scene.frame_end, end + 1)
-        )
-
-        if obj.animation_data and obj.animation_data.action:
-            for curve in obj.animation_data.action.fcurves:
-                for point in curve.keyframe_points:
-                    point.interpolation = "CONSTANT"
+    # Render configuration summary for GitHub Actions logs.
+    print(
+        f"Rendering at {scene.render.resolution_x}x"
+        f"{scene.render.resolution_y}, "
+        f"{scene.render.resolution_percentage}% scale; "
+        f"samples={samples}; "
+        f"fps={scene.render.fps}; "
+        f"frames={scene.frame_end}",
+        flush=True
+    )
 
     # Render the animation.
     bpy.ops.render.render(animation=True)
