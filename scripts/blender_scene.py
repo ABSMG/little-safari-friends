@@ -9,6 +9,8 @@ Features:
 - Episode-driven captions.
 - Configurable resolution, samples, duration and frame rate.
 - MP4/H.264 output suitable for GitHub Actions automation.
+- Blender 3.x and 4.x color-management compatibility.
+- Compatible handling of weighted-normal modifiers.
 """
 
 import argparse
@@ -50,21 +52,37 @@ def mat(
     metallic=0.0,
     subsurface=0.0
 ):
-    material = bpy.data.materials.new(name)
+    material = bpy.data.materials.get(name)
+
+    if material is None:
+        material = bpy.data.materials.new(name)
+
     material.diffuse_color = (*color, 1.0)
     material.use_nodes = True
 
     bsdf = material.node_tree.nodes.get("Principled BSDF")
 
     if bsdf:
-        bsdf.inputs["Base Color"].default_value = (*color, 1.0)
-        bsdf.inputs["Roughness"].default_value = roughness
+        if "Base Color" in bsdf.inputs:
+            bsdf.inputs["Base Color"].default_value = (
+                *color,
+                1.0
+            )
+
+        if "Roughness" in bsdf.inputs:
+            bsdf.inputs["Roughness"].default_value = roughness
 
         if "Metallic" in bsdf.inputs:
             bsdf.inputs["Metallic"].default_value = metallic
 
         if "Subsurface Weight" in bsdf.inputs:
-            bsdf.inputs["Subsurface Weight"].default_value = subsurface
+            bsdf.inputs[
+                "Subsurface Weight"
+            ].default_value = subsurface
+        elif "Subsurface" in bsdf.inputs:
+            bsdf.inputs[
+                "Subsurface"
+            ].default_value = subsurface
 
     material.roughness = roughness
 
@@ -128,10 +146,25 @@ def rod(name, a, b, radius, material, vertices=20):
     bevel.width = min(radius * 0.22, 0.035)
     bevel.segments = 3
 
-    obj.modifiers.new(
-        name="Weighted corner normals",
-        type="WEIGHTED_NORMAL"
-    )
+    # Blender 3.x compatibility:
+    # Weighted Normal modifiers can warn when Auto Smooth
+    # is disabled. Enable it when this property exists.
+    try:
+        if hasattr(obj.data, "use_auto_smooth"):
+            obj.data.use_auto_smooth = True
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    # Keep the weighted-normal modifier where supported.
+    # Avoid stopping the scene build if a Blender version
+    # does not support the modifier.
+    try:
+        obj.modifiers.new(
+            name="Weighted corner normals",
+            type="WEIGHTED_NORMAL"
+        )
+    except (RuntimeError, TypeError, ValueError):
+        pass
 
     return obj
 
@@ -169,7 +202,14 @@ def smooth_animation(obj):
     if not action:
         return
 
-    for curve in action.fcurves:
+    # Blender 3.x exposes action.fcurves directly.
+    # Guard this section for compatibility with newer APIs.
+    try:
+        curves = action.fcurves
+    except (AttributeError, TypeError):
+        return
+
+    for curve in curves:
         for point in curve.keyframe_points:
             point.interpolation = "BEZIER"
             point.handle_left_type = "AUTO_CLAMPED"
@@ -533,13 +573,15 @@ def create_elephant(grey, pink, dark, white):
     )
 
     # Small tusks.
+    ivory = cream_material()
+
     for dx in (-0.13, 0.13):
         rod(
             "Ellie tusk",
             (1.0 + dx, 0.04, 1.24),
             (1.0 + dx, -0.02, 1.08),
             0.035,
-            cream_material(),
+            ivory,
             12
         )
 
@@ -584,9 +626,7 @@ def create_giraffe(gold, brown, dark, white):
         "Gigi body",
         (2.7, 0.9, 0.95),
         (0.44, 0.62, 0.42),
-        gold,
-        36,
-        24
+        gold
     )
 
     rod(
@@ -896,9 +936,197 @@ def configure_captions(scene, captions):
         )
 
         if obj.animation_data and obj.animation_data.action:
-            for curve in obj.animation_data.action.fcurves:
+            try:
+                curves = obj.animation_data.action.fcurves
+            except (AttributeError, TypeError):
+                curves = []
+
+            for curve in curves:
                 for point in curve.keyframe_points:
                     point.interpolation = "CONSTANT"
+
+
+# ---------------------------------------------------------
+# COLOR MANAGEMENT
+# ---------------------------------------------------------
+
+def configure_color_management(scene):
+    """Select only color-management options supported by Blender."""
+
+    view_settings = scene.view_settings
+
+    # Get supported view transforms for the installed Blender.
+    try:
+        available_transforms = [
+            item.name
+            for item in (
+                bpy.types.ColorManagedViewSettings
+                .bl_rna.properties["view_transform"].enum_items
+            )
+        ]
+    except (AttributeError, TypeError, ValueError):
+        available_transforms = []
+
+    # Prefer AgX when available, then Filmic, then Standard.
+    # Blender 3.0.1 may not provide AgX.
+    for transform_name in (
+        "AgX",
+        "Filmic",
+        "Standard"
+    ):
+        if transform_name not in available_transforms:
+            continue
+
+        try:
+            view_settings.view_transform = transform_name
+            print(
+                f"Color management: view transform = "
+                f"{transform_name}",
+                flush=True
+            )
+            break
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+    # Discover supported looks. Some Blender versions only
+    # expose "None", so never assign an unavailable look.
+    try:
+        available_looks = [
+            item.name
+            for item in (
+                bpy.types.ColorManagedViewSettings
+                .bl_rna.properties["look"].enum_items
+            )
+        ]
+    except (AttributeError, TypeError, ValueError):
+        available_looks = []
+
+    preferred_looks = (
+        "AgX - Medium High Contrast",
+        "Medium High Contrast",
+        "Medium High Contrast Look",
+        "None",
+    )
+
+    selected_look = False
+
+    for look_name in preferred_looks:
+        if look_name not in available_looks:
+            continue
+
+        try:
+            view_settings.look = look_name
+            print(
+                f"Color management: look = {look_name}",
+                flush=True
+            )
+            selected_look = True
+            break
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+    if not selected_look:
+        print(
+            "Color management: keeping Blender's supported "
+            "default look.",
+            flush=True
+        )
+
+    # Safe exposure and gamma defaults.
+    try:
+        view_settings.exposure = 0.0
+        view_settings.gamma = 1.0
+    except (AttributeError, TypeError, ValueError) as error:
+        print(
+            f"Color management exposure/gamma warning: {error}",
+            flush=True
+        )
+
+
+# ---------------------------------------------------------
+# RENDER SETTINGS
+# ---------------------------------------------------------
+
+def configure_render_engine(scene):
+    """Configure an Eevee engine available in this Blender version."""
+
+    if bpy.app.version >= (4, 0, 0):
+        scene.render.engine = "BLENDER_EEVEE_NEXT"
+    else:
+        scene.render.engine = "BLENDER_EEVEE"
+
+    print(
+        f"Render engine: {scene.render.engine}",
+        flush=True
+    )
+
+
+def configure_eevee_samples(scene, samples):
+    """Set Eevee sample count when supported by the engine."""
+
+    try:
+        if hasattr(scene, "eevee") and hasattr(
+            scene.eevee,
+            "taa_render_samples"
+        ):
+            scene.eevee.taa_render_samples = samples
+            print(
+                f"Eevee render samples: {samples}",
+                flush=True
+            )
+    except (AttributeError, TypeError, ValueError) as error:
+        print(
+            f"Could not configure Eevee samples: {error}",
+            flush=True
+        )
+
+
+def configure_shadow_features(scene):
+    """Enable ambient occlusion on Blender versions exposing it."""
+
+    try:
+        if hasattr(scene, "eevee"):
+            if hasattr(scene.eevee, "use_gtao"):
+                scene.eevee.use_gtao = True
+
+            if hasattr(scene.eevee, "gtao_distance"):
+                scene.eevee.gtao_distance = 3
+
+            if hasattr(scene.eevee, "gtao_factor"):
+                scene.eevee.gtao_factor = 1.25
+    except (AttributeError, TypeError, ValueError) as error:
+        print(
+            f"Optional ambient-occlusion warning: {error}",
+            flush=True
+        )
+
+
+def configure_video_output(scene, output_path):
+    """Configure the MP4/H.264 animation output."""
+
+    output = Path(output_path).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    scene.render.image_settings.file_format = "FFMPEG"
+    scene.render.ffmpeg.format = "MPEG4"
+    scene.render.ffmpeg.codec = "H264"
+
+    try:
+        scene.render.ffmpeg.constant_rate_factor = "HIGH"
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    try:
+        scene.render.ffmpeg.ffmpeg_preset = "GOOD"
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    scene.render.filepath = str(output)
+
+    print(
+        f"Video output: {scene.render.filepath}",
+        flush=True
+    )
 
 
 # ---------------------------------------------------------
@@ -908,9 +1136,26 @@ def configure_captions(scene, captions):
 def main():
     args = get_args()
 
+    episode_path = Path(args.episode)
+
+    if not episode_path.is_file():
+        raise FileNotFoundError(
+            f"Episode configuration not found: {episode_path}"
+        )
+
     episode = json.loads(
-        Path(args.episode).read_text(encoding="utf-8")
+        episode_path.read_text(encoding="utf-8")
     )
+
+    if not isinstance(episode, dict):
+        raise ValueError(
+            "episode.json must contain a JSON object."
+        )
+
+    if not isinstance(episode.get("scenes"), list):
+        raise ValueError(
+            "episode.json must contain a 'scenes' list."
+        )
 
     scene = bpy.context.scene
 
@@ -1072,10 +1317,7 @@ def main():
         )
         background.inputs["Strength"].default_value = 0.45
 
-    if bpy.app.version >= (4, 0, 0):
-        scene.render.engine = "BLENDER_EEVEE_NEXT"
-    else:
-        scene.render.engine = "BLENDER_EEVEE"
+    configure_render_engine(scene)
 
     scene.render.resolution_x = int(
         episode.get("width", 1280)
@@ -1085,26 +1327,23 @@ def main():
         episode.get("height", 720)
     )
 
-    # Higher quality than the previous 75% render.
+    # Configurable render resolution.
     scene.render.resolution_percentage = int(
         episode.get("resolution_percentage", 100)
     )
 
-    samples = int(
-        episode.get("render_samples", 16)
+    # Validate resolution percentage.
+    scene.render.resolution_percentage = max(
+        1,
+        min(100, scene.render.resolution_percentage)
     )
 
-    try:
-        if hasattr(scene, "eevee") and hasattr(
-            scene.eevee,
-            "taa_render_samples"
-        ):
-            scene.eevee.taa_render_samples = samples
-    except (AttributeError, TypeError, ValueError) as error:
-        print(
-            f"Could not configure Eevee samples: {error}",
-            flush=True
-        )
+    samples = max(
+        1,
+        int(episode.get("render_samples", 16))
+    )
+
+    configure_eevee_samples(scene, samples)
 
     # Keep the scene optimised without disabling its materials.
     try:
@@ -1116,51 +1355,31 @@ def main():
     scene.render.image_settings.color_mode = "RGBA"
     scene.render.film_transparent = False
 
-    # Color management.
-    try:
-        scene.view_settings.view_transform = "AgX"
-    except (TypeError, ValueError):
-        scene.view_settings.view_transform = "Standard"
-
-    scene.view_settings.look = "AgX - Medium High Contrast" \
-        if "AgX - Medium High Contrast" in [
-            item.name
-            for item in bpy.types.ColorManagedViewSettings.bl_rna
-            .properties["look"].enum_items
-        ] else "Medium High Contrast"
-
-    scene.view_settings.exposure = 0.0
-    scene.view_settings.gamma = 1.0
+    # Fixed color-management configuration.
+    # This replaces the incompatible hard-coded look assignment.
+    configure_color_management(scene)
 
     # Shadows and ambient occlusion where supported.
-    try:
-        if hasattr(scene, "eevee"):
-            scene.eevee.use_gtao = True
-            scene.eevee.gtao_distance = 3
-            scene.eevee.gtao_factor = 1.25
-    except (AttributeError, TypeError, ValueError):
-        pass
+    configure_shadow_features(scene)
 
-    # Video output.
-    scene.render.fps = int(
-        episode.get("fps", 24)
+    # Video timing.
+    scene.render.fps = max(
+        1,
+        int(episode.get("fps", 24))
     )
 
     scene.frame_start = 1
 
-    scene.frame_end = (
+    duration_seconds = max(
+        1,
         int(episode.get("duration_seconds", 32))
-        * scene.render.fps
     )
 
-    scene.render.image_settings.file_format = "FFMPEG"
-    scene.render.ffmpeg.format = "MPEG4"
-    scene.render.ffmpeg.codec = "H264"
-    scene.render.ffmpeg.constant_rate_factor = "HIGH"
-    scene.render.ffmpeg.ffmpeg_preset = "GOOD"
+    scene.frame_end = duration_seconds * scene.render.fps
 
-    scene.render.filepath = str(
-        Path(args.output).resolve()
+    configure_video_output(
+        scene,
+        args.output
     )
 
     # -----------------------------------------------------
@@ -1202,6 +1421,9 @@ def main():
         captions
     )
 
+    # Set the initial frame explicitly.
+    scene.frame_set(scene.frame_start)
+
     # Render configuration summary for GitHub Actions logs.
     print(
         f"Rendering at {scene.render.resolution_x}x"
@@ -1209,12 +1431,33 @@ def main():
         f"{scene.render.resolution_percentage}% scale; "
         f"samples={samples}; "
         f"fps={scene.render.fps}; "
+        f"duration={duration_seconds}s; "
         f"frames={scene.frame_end}",
         flush=True
     )
 
     # Render the animation.
     bpy.ops.render.render(animation=True)
+
+    # Confirm the output file exists after rendering.
+    output_file = Path(scene.render.filepath)
+
+    if not output_file.is_file():
+        raise RuntimeError(
+            "Blender finished rendering, but the expected "
+            f"video file was not found: {output_file}"
+        )
+
+    if output_file.stat().st_size == 0:
+        raise RuntimeError(
+            f"Rendered video is empty: {output_file}"
+        )
+
+    print(
+        f"Render complete: {output_file} "
+        f"({output_file.stat().st_size} bytes)",
+        flush=True
+    )
 
 
 if __name__ == "__main__":
