@@ -1,10 +1,12 @@
 {
   "episode_id": "leo_learns_to_share",
   "title": "Leo Learns to Share | Little Safari Friends",
-  "description": "Leo the little lion learns that sharing makes playtime happier. A gentle original safari story for young children.\n\n#LittleSafariFriends #KidsStories #Sharing",
+  "description": "Join Leo the little lion, Ellie the elephant and Gigi the giraffe on a sunny safari adventure! When Leo finds three delicious mangoes, he discovers that sharing makes friendship stronger and playtime happier. An original, gentle animated story for young children about kindness, friendship and sharing.\n\nSubscribe to Little Safari Friends for more fun animal stories and positive life lessons!\n\n#LittleSafariFriends #KidsStories #Sharing #AnimalStories #Kindness #PreschoolStories",
   "voice": "en-US-AnaNeural",
   "width": 1280,
   "height": 720,
+  "resolution_percentage": 100,
+  "render_samples": 16,
   "fps": 24,
   "duration_seconds": 32,
   "scenes": [
