@@ -1,4 +1,4 @@
-name: Build private video
+name: Little Safari Friends Automation
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Check out repository
+      - name: Download repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -28,7 +28,7 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install Blender, FFmpeg and headless rendering dependencies
+      - name: Install Blender and FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -40,44 +40,35 @@ jobs:
             libxrender1 \
             libxext6 \
             libsm6
-          blender --version
-          ffmpeg -version
-          xvfb-run --help
 
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify episode configuration
+      - name: Generate a new episode
+        run: |
+          python scripts/generate_episode.py
+
+      - name: Validate episode
         run: |
           python - <<'PY'
           import json
           from pathlib import Path
 
           path = Path("episode.json")
-          if not path.exists():
-              raise SystemExit("ERROR: episode.json was not found.")
-
           episode = json.loads(path.read_text(encoding="utf-8"))
 
-          required = ["episode_id", "scenes"]
-          missing = [key for key in required if key not in episode]
+          assert episode.get("episode_id"), "Missing episode_id"
+          assert episode.get("title"), "Missing title"
+          assert episode.get("scenes"), "No scenes found"
 
-          if missing:
-              raise SystemExit(
-                  f"ERROR: Missing required episode fields: {missing}"
-              )
-
-          if not episode["scenes"]:
-              raise SystemExit("ERROR: episode.json contains no scenes.")
-
-          print(f"Episode: {episode['episode_id']}")
-          print(f"Scenes: {len(episode['scenes'])}")
-          print("Episode configuration verified.")
+          print("Episode:", episode["title"])
+          print("Scenes:", len(episode["scenes"]))
+          print("Episode validation passed.")
           PY
 
-      - name: Build animated episode
+      - name: Render animated video and narration
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           PYTHONUNBUFFERED: "1"
@@ -86,27 +77,20 @@ jobs:
           xvfb-run -a -s "-screen 0 1280x720x24" \
             python scripts/create_episode.py
 
-      - name: Verify generated MP4
+      - name: Verify video
         run: |
           set -eu
 
           VIDEO="output/$(python -c 'import json; print(json.load(open("episode.json", encoding="utf-8"))["episode_id"])').mp4"
 
-          if [ ! -s "$VIDEO" ]; then
-            echo "ERROR: Final MP4 is missing or empty: $VIDEO"
-            echo "Available output files:"
-            ls -lah output || true
-            exit 1
-          fi
+          test -s "$VIDEO"
 
           ffprobe -v error \
             -show_entries format=duration,size \
             -of default=noprint_wrappers=1 \
             "$VIDEO"
 
-          echo "Video verification passed: $VIDEO"
-
-      - name: Save MP4 as workflow artifact
+      - name: Save video for download
         uses: actions/upload-artifact@v4
         with:
           name: little-safari-friends-video
@@ -114,27 +98,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload to YouTube privately when credentials are configured
+      - name: Upload video to YouTube
         env:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          YOUTUBE_PRIVACY_STATUS: private
         run: |
-          set -eu
-
           if [ -n "$YOUTUBE_CLIENT_ID" ] && \
              [ -n "$YOUTUBE_CLIENT_SECRET" ] && \
              [ -n "$YOUTUBE_REFRESH_TOKEN" ]; then
-
-            VIDEO="output/$(python -c 'import json; print(json.load(open("episode.json", encoding="utf-8"))["episode_id"])').mp4"
-
-            if [ ! -s "$VIDEO" ]; then
-              echo "ERROR: Video not found for YouTube upload: $VIDEO"
-              exit 1
-            fi
-
-            python scripts/upload_youtube.py "$VIDEO"
+            python scripts/upload_youtube.py
           else
-            echo "YouTube upload skipped: repository secrets are not all configured."
-            echo "The generated video remains available as a workflow artifact."
+            echo "YouTube upload skipped."
+            echo "Configure the three YouTube repository secrets."
           fi
